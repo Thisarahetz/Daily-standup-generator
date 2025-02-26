@@ -1,4 +1,40 @@
-#!/usr/bin/env python3
+def format_output(standup_speech, commits, output_format="text"):
+    """Format the final output with the standup speech and commit list."""
+    if output_format == "json":
+        output = {
+            "speech": standup_speech,
+            "commits": commits,
+            "generated_at": datetime.datetime.now().isoformat()
+        }
+        return json.dumps(output, indent=2)
+    else:
+        result = standup_speech
+        
+        # Add a separator
+        result += "\n\n" + "-" * 40 + "\n"
+        result += "COMMIT DETAILS:\n" + "-" * 40 + "\n\n"
+        
+        # Group commits by repository
+        repo_commits = {}
+        for commit in commits:
+            repo = commit["repo"]
+            if repo not in repo_commits:
+                repo_commits[repo] = []
+            repo_commits[repo].append(commit)
+        
+        # Format commits by repository
+        for repo, repo_commits_list in repo_commits.items():
+            result += f"Repository: {repo}\n"
+            if any("branch" in commit for commit in repo_commits_list):
+                for commit in repo_commits_list:
+                    branch = commit.get("branch", "default")
+                    result += f"  [{branch}] {commit['message']} (sha: {commit['sha']})\n"
+            else:
+                for commit in repo_commits_list:
+                    result += f"  {commit['message']} (sha: {commit['sha']})\n"
+            result += "\n"
+        
+        return result#!/usr/bin/env python3
 """
 Daily Standup Generator using GitHub commits and Anthropic API
 -----------------------------------------
@@ -392,36 +428,60 @@ Keep it under 2 minutes when spoken aloud.
             return generate_with_local_template(commits)
 
 def generate_with_gemini(api_key, prompt):
-    """Generate using Google's Gemini API."""
+    """Generate using Google's Gemini API directly via HTTP request."""
     try:
         print("Generating standup speech with Gemini...")
-        genai.configure(api_key=api_key)
         
-        # Configure the generative model
-        generation_config = {
-            "temperature": 0.7,
-            "top_p": 0.95,
-            "top_k": 40,
-            "max_output_tokens": 1024,
+        # Prepare the request data
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+        
+        # Format the system instruction and prompt
+        system_instruction = "You are an assistant that helps developers create concise and informative standup speeches based on their GitHub commits."
+        full_prompt = f"{system_instruction}\n\n{prompt}"
+        
+        headers = {
+            "Content-Type": "application/json"
         }
         
-        model = genai.GenerativeModel(
-            model_name="gemini-pro",
-            generation_config=generation_config
-        )
+        data = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": full_prompt
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 1024,
+                "topP": 0.95,
+                "topK": 40
+            }
+        }
         
-        system_instruction = "You are an assistant that helps developers create concise and informative standup speeches based on their GitHub commits."
+        # Make the HTTP request
+        response = requests.post(url, headers=headers, json=data)
         
-        response = model.generate_content(
-            [system_instruction, prompt]
-        )
-        
-        if hasattr(response, 'text'):
-            return response.text
-        elif hasattr(response, 'parts'):
-            return response.parts[0].text
+        # Check if the request was successful
+        if response.status_code == 200:
+            response_json = response.json()
+            
+            # Extract the text from the response
+            try:
+                text = response_json.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                if text:
+                    return text
+                else:
+                    print(f"No text found in the response: {response_json}")
+            except (IndexError, KeyError) as e:
+                print(f"Error parsing response: {e}")
+                print(f"Response JSON: {response_json}")
+                return None
         else:
-            print("Unexpected response format from Gemini")
+            print(f"Request failed with status code {response.status_code}")
+            print(f"Response: {response.text}")
             return None
     except Exception as e:
         print(f"Error with Gemini API: {str(e)}")
@@ -589,19 +649,9 @@ def main():
     
     # Output results
     if output_format == "json":
-        output = {
-            "speech": standup_speech,
-            "commits": commits,
-            "generated_at": datetime.datetime.now().isoformat(),
-            "params": {
-                "repos": repos,
-                "days": days,
-                "username": username
-            }
-        }
-        result = json.dumps(output, indent=2)
+        result = format_output(standup_speech, commits, output_format="json")
     else:
-        result = standup_speech
+        result = format_output(standup_speech, commits, output_format="text")
     
     # Save or print result
     if save:
